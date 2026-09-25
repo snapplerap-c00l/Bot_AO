@@ -1,0 +1,15 @@
+{
+  "name": "allout-playtester-bot",
+  "version": "1.0.0",
+  "description": "Joins an allout.game link, observes the game, and writes a bug/improvement report using Claude.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "dotenv": "^16.4.5",
+    "playwright": "^1.47.0"
+  }
+}
