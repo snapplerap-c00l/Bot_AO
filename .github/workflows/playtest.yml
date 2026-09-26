@@ -17,6 +17,11 @@ on:
         required: false
         default: "20"
         type: string
+      bot_count:
+        description: "How many bots to run in parallel (max 10)"
+        required: false
+        default: "1"
+        type: string
 
 jobs:
   playtest:
@@ -42,6 +47,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OBSERVE_MINUTES: ${{ inputs.observe_minutes }}
           SCREENSHOT_INTERVAL_SECONDS: ${{ inputs.screenshot_interval_seconds }}
+          BOT_COUNT: ${{ inputs.bot_count }}
         run: node index.js "${{ inputs.game_url }}"
 
       - name: Post report to job summary
