@@ -195,8 +195,11 @@ async function main() {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
-  await page.goto(GAME_URL, { waitUntil: "networkidle", timeout: 30000 });
-  await sleep(3000); // let any client-side rendering settle
+  // Game pages like this often keep a live connection (websocket/polling)
+  // running forever, so "networkidle" never fires. Wait for the basic page
+  // load instead, then give it extra time for game assets to render.
+  await page.goto(GAME_URL, { waitUntil: "load", timeout: 45000 });
+  await sleep(8000); // let game assets/canvas finish rendering
 
   const info = await extractGameInfo(page);
   console.log("Extracted page info:", info.title);
