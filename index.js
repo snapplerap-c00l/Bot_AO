@@ -12,6 +12,14 @@ const SCREENSHOT_INTERVAL_SECONDS = Number(
 );
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = "claude-sonnet-5";
+const BOT_COUNT = Math.max(1, Math.min(10, Number(process.env.BOT_COUNT || 1)));
+// Capped at 10 - each bot is its own full browser instance, and GitHub's
+// free runners only have 2 CPU cores / 7GB RAM, so too many at once will
+// just make every bot slower/flakier rather than actually help.
+
+// How many screenshots (max) from each bot get sent to Claude for the
+// report - keeps the request size sane when there are many bots.
+const MAX_SCREENSHOTS_PER_BOT_FOR_REPORT = 4;
 
 if (!GAME_URL) {
   console.error("Usage: node index.js <allout.game link>");
@@ -97,8 +105,8 @@ async function nudgeAround(page) {
   }
 }
 
-async function observeGame(page) {
-  await ensureDir(outDir);
+async function observeGame(page, botDir, botLabel) {
+  await ensureDir(botDir);
   const screenshots = [];
   const totalMs = OBSERVE_MINUTES * 60 * 1000;
   const intervalMs = SCREENSHOT_INTERVAL_SECONDS * 1000;
@@ -106,13 +114,13 @@ async function observeGame(page) {
 
   for (let i = 0; i < shots; i++) {
     await nudgeAround(page);
-    const filePath = path.join(outDir, `shot-${String(i).padStart(3, "0")}.png`);
+    const filePath = path.join(botDir, `shot-${String(i).padStart(3, "0")}.png`);
     try {
       await page.screenshot({ path: filePath });
       screenshots.push(filePath);
-      console.log(`Saved screenshot ${i + 1}/${shots}`);
+      console.log(`[${botLabel}] Saved screenshot ${i + 1}/${shots}`);
     } catch (err) {
-      console.warn(`Screenshot ${i + 1} failed: ${err.message}`);
+      console.warn(`[${botLabel}] Screenshot ${i + 1} failed: ${err.message}`);
     }
     await sleep(intervalMs);
   }
@@ -120,42 +128,95 @@ async function observeGame(page) {
   return screenshots;
 }
 
-async function buildReportWithClaude({ url, info, screenshotPaths }) {
+// Runs a single bot end-to-end: joins the game, extracts info, observes,
+// and closes its browser. Each bot gets its own browser instance so they
+// behave like independent players rather than sharing one session.
+async function runBot(botIndex) {
+  const botLabel = `bot-${botIndex + 1}`;
+  const botDir = path.join(outDir, botLabel);
+
+  console.log(`[${botLabel}] Joining: ${GAME_URL}`);
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+
+  try {
+    // Game pages like this often keep a live connection (websocket/polling)
+    // running forever, so "networkidle" never fires. Wait for the basic
+    // page load instead, then give it extra time for assets to render.
+    await page.goto(GAME_URL, { waitUntil: "load", timeout: 45000 });
+    await sleep(8000);
+
+    const info = await extractGameInfo(page);
+    console.log(`[${botLabel}] Extracted page info:`, info.title);
+
+    await tryClickPlay(page);
+    await sleep(3000);
+
+    console.log(
+      `[${botLabel}] Observing for ~${OBSERVE_MINUTES} minute(s), screenshot every ${SCREENSHOT_INTERVAL_SECONDS}s...`
+    );
+    const screenshotPaths = await observeGame(page, botDir, botLabel);
+
+    return { botLabel, info, screenshotPaths };
+  } finally {
+    await browser.close();
+  }
+}
+
+async function buildReportWithClaude({ url, botResults }) {
   if (!ANTHROPIC_API_KEY) {
     const note =
       "No ANTHROPIC_API_KEY set — skipping AI summary. " +
-      "Add your key to .env and re-run to generate the written report. " +
-      "Raw screenshots and page info have been saved for this run.";
+      "Add your key to .env (or the ANTHROPIC_API_KEY secret) and re-run to " +
+      "generate the written report. Raw screenshots and page info have been " +
+      "saved for this run.";
     console.log(note);
     return note;
   }
 
   const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
+  // Use the first bot's page info for the shared description (it's the same
+  // game for all of them), and pull a capped number of screenshots from
+  // each bot so the request stays a reasonable size.
+  const info = botResults[0].info;
   const imageBlocks = [];
-  for (const p of screenshotPaths) {
-    const data = await fs.readFile(p);
-    imageBlocks.push({
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: "image/png",
-        data: data.toString("base64"),
-      },
-    });
+  const perBotSections = [];
+
+  for (const { botLabel, screenshotPaths } of botResults) {
+    const sampled = screenshotPaths.slice(0, MAX_SCREENSHOTS_PER_BOT_FOR_REPORT);
+    perBotSections.push(`${botLabel}: ${sampled.length} screenshots attached`);
+    for (const p of sampled) {
+      const data = await fs.readFile(p);
+      imageBlocks.push({ type: "text", text: `[${botLabel} screenshot]` });
+      imageBlocks.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/png",
+          data: data.toString("base64"),
+        },
+      });
+    }
   }
 
+  const multiBot = botResults.length > 1;
+
   const systemPrompt = `You are an experienced game QA playtester and design
-reviewer. You are given a game's title/description text plus a timelapse of
-screenshots taken while a bot idled/explored in the game for a few minutes.
+reviewer. You are given a game's title/description text plus timelapse
+screenshots taken while ${multiBot ? `${botResults.length} independent bots` : "a bot"}
+idled/explored in the game for a few minutes${multiBot ? ", each as a separate simulated player joining at the same time" : ""}.
 Write a concise, useful report for the developer covering:
 
 1. Original concept - your best understanding of what the game is trying to be
 2. What's working - genuine strengths visible in the screenshots/description
 3. Possible bugs or issues - anything that looks broken, stuck, unclear, or
    inconsistent across the screenshots (e.g. UI overlap, nothing changing
-   over time when it should, error states, empty/blank screens)
-4. Improvement suggestions - concrete, actionable ideas
+   over time when it should, error states, empty/blank screens)${multiBot ? `
+4. Multiplayer observations - since screenshots are labeled by bot, note any
+   differences between bots (e.g. one stuck while others progress, players
+   not seeing each other, desync, lobby/matchmaking issues)` : ""}
+${multiBot ? "5" : "4"}. Improvement suggestions - concrete, actionable ideas
 
 Be honest and specific. If the screenshots barely change, say so plainly -
 that itself may be a bug (e.g. the game failing to load or respond) rather
@@ -168,7 +229,11 @@ Meta description: ${info.metaDescription || "(none found)"}
 Visible page text (truncated):
 ${info.bodyTextSnippet || "(none captured)"}
 
-Attached: ${imageBlocks.length} screenshots taken roughly every ${SCREENSHOT_INTERVAL_SECONDS}s over ~${OBSERVE_MINUTES} minutes of observation, in chronological order.`;
+${botResults.length} bot(s) observed this game in parallel, each roughly every
+${SCREENSHOT_INTERVAL_SECONDS}s over ~${OBSERVE_MINUTES} minutes:
+${perBotSections.join("\n")}
+
+Screenshots below are labeled by which bot took them, in order.`;
 
   const response = await client.messages.create({
     model: MODEL,
@@ -191,40 +256,23 @@ Attached: ${imageBlocks.length} screenshots taken roughly every ${SCREENSHOT_INT
 }
 
 async function main() {
-  console.log(`Joining: ${GAME_URL}`);
-  const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-
-  // Game pages like this often keep a live connection (websocket/polling)
-  // running forever, so "networkidle" never fires. Wait for the basic page
-  // load instead, then give it extra time for game assets to render.
-  await page.goto(GAME_URL, { waitUntil: "load", timeout: 45000 });
-  await sleep(8000); // let game assets/canvas finish rendering
-
-  const info = await extractGameInfo(page);
-  console.log("Extracted page info:", info.title);
-
-  await tryClickPlay(page);
-  await sleep(3000);
-
   console.log(
-    `Observing for ~${OBSERVE_MINUTES} minute(s), screenshot every ${SCREENSHOT_INTERVAL_SECONDS}s...`
+    `Starting ${BOT_COUNT} bot(s) against: ${GAME_URL}`
   );
-  const screenshotPaths = await observeGame(page);
+  await ensureDir(outDir);
 
-  await browser.close();
+  const botResults = await Promise.all(
+    Array.from({ length: BOT_COUNT }, (_, i) => runBot(i))
+  );
 
   console.log("Generating report...");
-  const report = await buildReportWithClaude({
-    url: GAME_URL,
-    info,
-    screenshotPaths,
-  });
+  const report = await buildReportWithClaude({ url: GAME_URL, botResults });
 
+  const info = botResults[0].info;
   const reportPath = path.join(outDir, "report.md");
   await fs.writeFile(
     reportPath,
-    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:** ${runId}\n\n---\n\n${report}\n`
+    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:** ${runId}\n**Bots:** ${BOT_COUNT}\n\n---\n\n${report}\n`
   );
 
   console.log(`\nDone. Report saved to: ${reportPath}`);
