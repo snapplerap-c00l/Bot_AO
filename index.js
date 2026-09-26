@@ -121,23 +121,46 @@ async function observeGame(page, botDir, botLabel) {
       console.log(`[${botLabel}] Saved screenshot ${i + 1}/${shots}`);
     } catch (err) {
       console.warn(`[${botLabel}] Screenshot ${i + 1} failed: ${err.message}`);
+      if (page.isClosed()) {
+        console.error(`[${botLabel}] Page is closed - stopping early.`);
+        break;
+      }
     }
-    await sleep(intervalMs);
+    // Split the wait into smaller chunks with a nudge in between, so
+    // activity looks more continuous rather than one blip every interval.
+    const half = Math.floor(intervalMs / 2);
+    await sleep(half);
+    await nudgeAround(page);
+    await sleep(intervalMs - half);
   }
 
   return screenshots;
 }
 
 // Runs a single bot end-to-end: joins the game, extracts info, observes,
-// and closes its browser. Each bot gets its own browser instance so they
-// behave like independent players rather than sharing one session.
-async function runBot(botIndex) {
+// and closes its browser context. Bots share one underlying browser process
+// but each gets its own context (like a separate incognito window) so they
+// behave like independent players without the overhead of N full browsers -
+// important since GitHub's free runners only have 2 CPU cores / 7GB RAM,
+// and launching a whole separate Chromium per bot can starve everyone once
+// you're running more than a couple at once.
+async function runBot(browser, botIndex) {
   const botLabel = `bot-${botIndex + 1}`;
   const botDir = path.join(outDir, botLabel);
 
   console.log(`[${botLabel}] Joining: ${GAME_URL}`);
-  const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage();
+
+  // Surface crashes/disconnects clearly in the logs instead of failing
+  // silently - this is exactly what we want visibility into if a bot
+  // drops out partway through.
+  page.on("crash", () => {
+    console.error(`[${botLabel}] Page CRASHED at ${new Date().toISOString()}`);
+  });
+  page.on("close", () => {
+    console.warn(`[${botLabel}] Page closed at ${new Date().toISOString()}`);
+  });
 
   try {
     // Game pages like this often keep a live connection (websocket/polling)
@@ -158,8 +181,11 @@ async function runBot(botIndex) {
     const screenshotPaths = await observeGame(page, botDir, botLabel);
 
     return { botLabel, info, screenshotPaths };
+  } catch (err) {
+    console.error(`[${botLabel}] Bot failed: ${err.message}`);
+    return { botLabel, info: { title: "", metaDescription: null, bodyTextSnippet: "" }, screenshotPaths: [], error: err.message };
   } finally {
-    await browser.close();
+    await context.close().catch(() => {});
   }
 }
 
@@ -261,18 +287,42 @@ async function main() {
   );
   await ensureDir(outDir);
 
-  const botResults = await Promise.all(
-    Array.from({ length: BOT_COUNT }, (_, i) => runBot(i))
-  );
+  const browser = await chromium.launch();
+  let botResults;
+  try {
+    botResults = await Promise.all(
+      Array.from({ length: BOT_COUNT }, (_, i) => runBot(browser, i))
+    );
+  } finally {
+    await browser.close();
+  }
+
+  const failedBots = botResults.filter((r) => r.error);
+  if (failedBots.length > 0) {
+    console.warn(
+      `${failedBots.length}/${BOT_COUNT} bot(s) failed: ${failedBots
+        .map((r) => `${r.botLabel} (${r.error})`)
+        .join(", ")}`
+    );
+  }
+  // Only bots that actually produced screenshots are useful for the report.
+  const usableBots = botResults.filter((r) => r.screenshotPaths.length > 0);
+  if (usableBots.length === 0) {
+    throw new Error("No bots produced any screenshots - nothing to report.");
+  }
 
   console.log("Generating report...");
-  const report = await buildReportWithClaude({ url: GAME_URL, botResults });
+  const report = await buildReportWithClaude({ url: GAME_URL, botResults: usableBots });
 
-  const info = botResults[0].info;
+  const info = usableBots[0].info;
+  const failedNote =
+    failedBots.length > 0
+      ? `\n**Note:** ${failedBots.length}/${BOT_COUNT} bot(s) failed to produce useful data and were excluded from the report below (see logs for details).\n`
+      : "";
   const reportPath = path.join(outDir, "report.md");
   await fs.writeFile(
     reportPath,
-    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:** ${runId}\n**Bots:** ${BOT_COUNT}\n\n---\n\n${report}\n`
+    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:** ${runId}\n**Bots:** ${BOT_COUNT}\n${failedNote}\n---\n\n${report}\n`
   );
 
   console.log(`\nDone. Report saved to: ${reportPath}`);
