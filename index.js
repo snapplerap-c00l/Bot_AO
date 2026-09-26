@@ -38,15 +38,83 @@ async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Closes a "Play on Phone" (QR code) modal if one is open, so it doesn't
+// block later attempts to find the real "Instant Play" button underneath.
+async function closePhoneModalIfOpen(page) {
+  try {
+    const modalVisible = await page
+      .locator('text=Play on Phone')
+      .first()
+      .isVisible({ timeout: 500 });
+    if (modalVisible) {
+      console.log("Closing 'Play on Phone' modal to reveal the real join button.");
+      // Try a close (X) button first, fall back to pressing Escape.
+      const closeBtn = page.locator('button[aria-label="Close"]').first();
+      if (await closeBtn.isVisible({ timeout: 500 }).catch(() => false)) {
+        await closeBtn.click({ timeout: 1000 }).catch(() => {});
+      } else {
+        await page.keyboard.press("Escape").catch(() => {});
+      }
+      await sleep(500);
+    }
+  } catch {
+    // No modal present - nothing to do.
+  }
+}
+
+// Dismisses the "Game Error" / matchmaking error dialog if present, by
+// clicking its light-colored action button - never the X (that just leaves
+// the error on screen without resetting matchmaking state). That button's
+// label varies ("Main Menu", "Rejoin", etc. depending on the error), so we
+// match on the known variants rather than one fixed string.
+async function dismissErrorDialogIfPresent(page, botLabel) {
+  try {
+    const errorVisible = await page
+      .locator('text=Game Error')
+      .first()
+      .isVisible({ timeout: 500 });
+    if (!errorVisible) return false;
+
+    const actionBtn = page.locator(
+      'button:has-text("Main Menu"), button:has-text("Rejoin"), button:has-text("Try Again"), button:has-text("Retry")'
+    ).first();
+
+    if (await actionBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      const label = await actionBtn.innerText().catch(() => "action button");
+      console.log(`[${botLabel}] Detected Game Error dialog - clicking "${label}".`);
+      await actionBtn.click({ timeout: 2000 }).catch(() => {});
+      await sleep(1500);
+      return true;
+    }
+    console.log(`[${botLabel}] Game Error dialog visible but no known action button matched.`);
+  } catch {
+    // No error dialog present - nothing to do.
+  }
+  return false;
+}
+
 // Try a handful of likely selectors/text for a "Play" / "Join" button.
 // Falls back to doing nothing if none are found — the page may auto-join.
-async function tryClickPlay(page) {
+async function tryClickPlay(page, botLabel = "join") {
+  // Close any "Play on Phone" (or similar) modal that may already be open -
+  // a generic "Play" match can accidentally trigger this instead of the
+  // real join button, since "Play on Phone" also contains the word "Play".
+  await closePhoneModalIfOpen(page);
+  // Also clear a "Game Error" / matchmaking error dialog if one's already
+  // showing, so it doesn't block finding the real join button below.
+  await dismissErrorDialogIfPresent(page, botLabel);
+
   const candidates = [
-    'button:has-text("Play")',
-    'button:has-text("Join")',
+    // Specific phrases first, so we never accidentally match "Play on Phone".
+    'button:has-text("Instant Play")',
+    'button:has-text("Play Now")',
+    'button:has-text("Play in Browser")',
     'button:has-text("Start")',
+    'button:has-text("Join")',
     '[data-testid="play-button"]',
-    'text=Play',
+    // Broad "Play" match last, and only if nothing more specific matched -
+    // still risky (could match "Play on Phone"), so it's a last resort.
+    'button:has-text("Play"):not(:has-text("Phone"))',
   ];
   for (const selector of candidates) {
     try {
@@ -62,6 +130,42 @@ async function tryClickPlay(page) {
   }
   console.log("No obvious play/join button found — assuming auto-join.");
   return false;
+}
+
+// Checks whether the game seems to have kicked us back to a join/play/
+// reconnect prompt, and clicks through it immediately if so. Reuses the
+// same candidate selectors as the initial join, since a disconnect often
+// just dumps you back on that same screen. Best-effort: if this specific
+// game's disconnect screen uses different text/selectors, this may miss
+// it - the fix is adding the right selector to this same list.
+async function tryReconnectIfNeeded(page, botLabel) {
+  await closePhoneModalIfOpen(page);
+  const dismissedError = await dismissErrorDialogIfPresent(page, botLabel);
+
+  const candidates = [
+    'button:has-text("Reconnect")',
+    'button:has-text("Rejoin")',
+    'text=Disconnected',
+    'text=Connection lost',
+    'button:has-text("Instant Play")',
+    'button:has-text("Play Now")',
+    'button:has-text("Join")',
+    'button:has-text("Play"):not(:has-text("Phone"))',
+  ];
+  for (const selector of candidates) {
+    try {
+      const el = page.locator(selector).first();
+      if (await el.isVisible({ timeout: 500 })) {
+        console.log(`[${botLabel}] Detected disconnect/rejoin prompt (${selector}) - rejoining.`);
+        await el.click({ timeout: 2000 }).catch(() => {});
+        await sleep(3000);
+        return true;
+      }
+    } catch {
+      // selector not present - keep checking the others
+    }
+  }
+  return dismissedError;
 }
 
 // Extract whatever title/description text is available on the page.
@@ -108,11 +212,14 @@ async function nudgeAround(page) {
 async function observeGame(page, botDir, botLabel) {
   await ensureDir(botDir);
   const screenshots = [];
+  let reconnectCount = 0;
   const totalMs = OBSERVE_MINUTES * 60 * 1000;
   const intervalMs = SCREENSHOT_INTERVAL_SECONDS * 1000;
   const shots = Math.max(1, Math.floor(totalMs / intervalMs));
 
   for (let i = 0; i < shots; i++) {
+    const reconnected = await tryReconnectIfNeeded(page, botLabel);
+    if (reconnected) reconnectCount++;
     await nudgeAround(page);
     const filePath = path.join(botDir, `shot-${String(i).padStart(3, "0")}.png`);
     try {
@@ -134,7 +241,11 @@ async function observeGame(page, botDir, botLabel) {
     await sleep(intervalMs - half);
   }
 
-  return screenshots;
+  if (reconnectCount > 0) {
+    console.log(`[${botLabel}] Rejoined ${reconnectCount} time(s) during observation.`);
+  }
+
+  return { screenshots, reconnectCount };
 }
 
 // Runs a single bot end-to-end: joins the game, extracts info, observes,
@@ -172,15 +283,19 @@ async function runBot(browser, botIndex) {
     const info = await extractGameInfo(page);
     console.log(`[${botLabel}] Extracted page info:`, info.title);
 
-    await tryClickPlay(page);
+    await tryClickPlay(page, botLabel);
     await sleep(3000);
 
     console.log(
       `[${botLabel}] Observing for ~${OBSERVE_MINUTES} minute(s), screenshot every ${SCREENSHOT_INTERVAL_SECONDS}s...`
     );
-    const screenshotPaths = await observeGame(page, botDir, botLabel);
+    const { screenshots: screenshotPaths, reconnectCount } = await observeGame(
+      page,
+      botDir,
+      botLabel
+    );
 
-    return { botLabel, info, screenshotPaths };
+    return { botLabel, info, screenshotPaths, reconnectCount };
   } catch (err) {
     console.error(`[${botLabel}] Bot failed: ${err.message}`);
     return { botLabel, info: { title: "", metaDescription: null, bodyTextSnippet: "" }, screenshotPaths: [], error: err.message };
@@ -209,9 +324,10 @@ async function buildReportWithClaude({ url, botResults }) {
   const imageBlocks = [];
   const perBotSections = [];
 
-  for (const { botLabel, screenshotPaths } of botResults) {
+  for (const { botLabel, screenshotPaths, reconnectCount } of botResults) {
     const sampled = screenshotPaths.slice(0, MAX_SCREENSHOTS_PER_BOT_FOR_REPORT);
-    perBotSections.push(`${botLabel}: ${sampled.length} screenshots attached`);
+    const reconnectNote = reconnectCount > 0 ? `, rejoined ${reconnectCount}x after being disconnected` : "";
+    perBotSections.push(`${botLabel}: ${sampled.length} screenshots attached${reconnectNote}`);
     for (const p of sampled) {
       const data = await fs.readFile(p);
       imageBlocks.push({ type: "text", text: `[${botLabel} screenshot]` });
@@ -238,7 +354,12 @@ Write a concise, useful report for the developer covering:
 2. What's working - genuine strengths visible in the screenshots/description
 3. Possible bugs or issues - anything that looks broken, stuck, unclear, or
    inconsistent across the screenshots (e.g. UI overlap, nothing changing
-   over time when it should, error states, empty/blank screens)${multiBot ? `
+   over time when it should, error states, empty/blank screens). Pay close
+   attention to any bot noted below as having rejoined after a disconnect -
+   that means the session got kicked and had to rejoin mid-observation,
+   which is worth flagging explicitly even if the rest of the screenshots
+   look fine, since it likely affects real players too (e.g. a guest/
+   anonymous session timeout).${multiBot ? `
 4. Multiplayer observations - since screenshots are labeled by bot, note any
    differences between bots (e.g. one stuck while others progress, players
    not seeing each other, desync, lobby/matchmaking issues)` : ""}
@@ -319,10 +440,15 @@ async function main() {
     failedBots.length > 0
       ? `\n**Note:** ${failedBots.length}/${BOT_COUNT} bot(s) failed to produce useful data and were excluded from the report below (see logs for details).\n`
       : "";
+  const totalReconnects = usableBots.reduce((sum, b) => sum + (b.reconnectCount || 0), 0);
+  const reconnectNote =
+    totalReconnects > 0
+      ? `\n**Note:** Bots were disconnected and had to rejoin ${totalReconnects} time(s) total across the observation window - see the report below for details.\n`
+      : "";
   const reportPath = path.join(outDir, "report.md");
   await fs.writeFile(
     reportPath,
-    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:** ${runId}\n**Bots:** ${BOT_COUNT}\n${failedNote}\n---\n\n${report}\n`
+    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:** ${runId}\n**Bots:** ${BOT_COUNT}\n${failedNote}${reconnectNote}\n---\n\n${report}\n`
   );
 
   console.log(`\nDone. Report saved to: ${reportPath}`);
