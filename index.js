@@ -63,20 +63,25 @@ async function clickIfVisible(page, text) {
 // block later attempts to find the real "Instant Play" button underneath.
 async function closePhoneModalIfOpen(page) {
   try {
-    const modalVisible = await page
-      .locator('text=Play on Phone')
-      .first()
-      .isVisible({ timeout: 500 });
+    // "Play on Phone" is also a persistent menu button (not just a modal),
+    // so checking for that text alone caused false positives - it treated
+    // the normal menu as "a modal is open" on every single check. The QR
+    // popup specifically also shows "Scan with your camera", which the
+    // persistent button does not - require both before acting.
+    const modalVisible =
+      (await page.locator('text=Play on Phone').first().isVisible({ timeout: 500 }).catch(() => false)) &&
+      (await page.locator('text=Scan with your camera').first().isVisible({ timeout: 500 }).catch(() => false));
     if (modalVisible) {
-      console.log("Closing 'Play on Phone' modal to reveal the real join button.");
-      // Try a close (X) button first, fall back to pressing Escape.
+      console.log("Closing 'Play on Phone' QR modal to reveal the real join button.");
       const closeBtn = page.locator('button[aria-label="Close"]').first();
       if (await closeBtn.isVisible({ timeout: 500 }).catch(() => false)) {
         await closeBtn.click({ timeout: 1000 }).catch(() => {});
-      } else {
-        await page.keyboard.press("Escape").catch(() => {});
+        await sleep(500);
       }
-      await sleep(500);
+      // No Escape-key fallback here - Escape often opens a game's own
+      // pause/settings menu instead of closing this popup, which is worse
+      // than just leaving the modal and letting the join-button matching
+      // below try to click "Instant Play" regardless.
     }
   } catch {
     // No modal present - nothing to do.
@@ -495,13 +500,4 @@ async function main() {
   const reportPath = path.join(outDir, "report.md");
   await fs.writeFile(
     reportPath,
-    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:** ${runId}\n**Bots:** ${BOT_COUNT}\n${failedNote}${reconnectNote}\n---\n\n${report}\n`
-  );
-
-  console.log(`\nDone. Report saved to: ${reportPath}`);
-}
-
-main().catch((err) => {
-  console.error("Bot run failed:", err);
-  process.exit(1);
-});
+    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:*
