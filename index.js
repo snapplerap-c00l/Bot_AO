@@ -38,6 +38,27 @@ async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Clicks the first visible element containing this text, regardless of
+// whether it's an actual <button> tag or a styled <div>/<span> acting like
+// one (common in canvas-overlay game UIs). Tries the more precise
+// button-tag match first since it's less likely to misfire, then falls
+// back to matching any element by text.
+async function clickIfVisible(page, text) {
+  const selectors = [`button:has-text("${text}")`, `text=${text}`];
+  for (const selector of selectors) {
+    try {
+      const el = page.locator(selector).first();
+      if (await el.isVisible({ timeout: 800 }).catch(() => false)) {
+        await el.click({ timeout: 2000 });
+        return true;
+      }
+    } catch {
+      // try the next selector strategy
+    }
+  }
+  return false;
+}
+
 // Closes a "Play on Phone" (QR code) modal if one is open, so it doesn't
 // block later attempts to find the real "Instant Play" button underneath.
 async function closePhoneModalIfOpen(page) {
@@ -85,18 +106,15 @@ async function dismissErrorDialogIfPresent(page, botLabel) {
     }
     if (!errorVisible) return false;
 
-    const actionBtn = page.locator(
-      'button:has-text("Resume"), button:has-text("Main Menu"), button:has-text("Rejoin"), button:has-text("Try Again"), button:has-text("Retry")'
-    ).first();
-
-    if (await actionBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-      const label = await actionBtn.innerText().catch(() => "action button");
-      console.log(`[${botLabel}] Detected Game Error dialog - clicking "${label}".`);
-      await actionBtn.click({ timeout: 2000 }).catch(() => {});
-      await sleep(1500);
-      return true;
+    const actionLabels = ["Resume", "Main Menu", "Rejoin", "Try Again", "Retry"];
+    for (const label of actionLabels) {
+      if (await clickIfVisible(page, label)) {
+        console.log(`[${botLabel}] Detected error dialog - clicked "${label}".`);
+        await sleep(1500);
+        return true;
+      }
     }
-    console.log(`[${botLabel}] Game Error dialog visible but no known action button matched.`);
+    console.log(`[${botLabel}] Error dialog visible but no known action button matched.`);
   } catch {
     // No error dialog present - nothing to do.
   }
@@ -114,30 +132,33 @@ async function tryClickPlay(page, botLabel = "join") {
   // showing, so it doesn't block finding the real join button below.
   await dismissErrorDialogIfPresent(page, botLabel);
 
-  const candidates = [
-    // Specific phrases first, so we never accidentally match "Play on Phone".
-    'button:has-text("Instant Play")',
-    'button:has-text("Play Now")',
-    'button:has-text("Play in Browser")',
-    'button:has-text("Start")',
-    'button:has-text("Join")',
-    '[data-testid="play-button"]',
-    // Broad "Play" match last, and only if nothing more specific matched -
-    // still risky (could match "Play on Phone"), so it's a last resort.
-    'button:has-text("Play"):not(:has-text("Phone"))',
-  ];
-  for (const selector of candidates) {
-    try {
-      const el = page.locator(selector).first();
-      if (await el.isVisible({ timeout: 2000 })) {
-        await el.click({ timeout: 2000 });
-        console.log(`Clicked play/join button via selector: ${selector}`);
-        return true;
-      }
-    } catch {
-      // selector not found or not clickable — try the next one
+  // Specific phrases first, so we never accidentally match "Play on Phone".
+  const labels = ["Instant Play", "Play Now", "Play in Browser", "Start", "Join"];
+  for (const label of labels) {
+    if (await clickIfVisible(page, label)) {
+      console.log(`Clicked "${label}" to join.`);
+      return true;
     }
   }
+
+  // Last-resort bare "Play" match - riskier since it could match "Play on
+  // Phone" too, so explicitly skip anything whose text mentions "Phone".
+  try {
+    const playEls = page.locator('text=Play');
+    const count = await playEls.count();
+    for (let i = 0; i < count; i++) {
+      const el = playEls.nth(i);
+      const text = (await el.innerText().catch(() => "")).trim();
+      if (text && !/phone/i.test(text) && (await el.isVisible().catch(() => false))) {
+        console.log(`Clicked fallback "Play" match: "${text}"`);
+        await el.click({ timeout: 2000 }).catch(() => {});
+        return true;
+      }
+    }
+  } catch {
+    // no matches - fall through
+  }
+
   console.log("No obvious play/join button found — assuming auto-join.");
   return false;
 }
@@ -152,29 +173,33 @@ async function tryReconnectIfNeeded(page, botLabel) {
   await closePhoneModalIfOpen(page);
   const dismissedError = await dismissErrorDialogIfPresent(page, botLabel);
 
-  const candidates = [
-    'button:has-text("Reconnect")',
-    'button:has-text("Rejoin")',
-    'text=Disconnected',
-    'text=Connection lost',
-    'button:has-text("Instant Play")',
-    'button:has-text("Play Now")',
-    'button:has-text("Join")',
-    'button:has-text("Play"):not(:has-text("Phone"))',
-  ];
-  for (const selector of candidates) {
-    try {
-      const el = page.locator(selector).first();
-      if (await el.isVisible({ timeout: 500 })) {
-        console.log(`[${botLabel}] Detected disconnect/rejoin prompt (${selector}) - rejoining.`);
+  const labels = ["Reconnect", "Rejoin", "Instant Play", "Play Now", "Join"];
+  for (const label of labels) {
+    if (await clickIfVisible(page, label)) {
+      console.log(`[${botLabel}] Detected disconnect/rejoin prompt - clicked "${label}".`);
+      await sleep(3000);
+      return true;
+    }
+  }
+
+  // Bare "Play" fallback, same phone-exclusion safeguard as the initial join.
+  try {
+    const playEls = page.locator('text=Play');
+    const count = await playEls.count();
+    for (let i = 0; i < count; i++) {
+      const el = playEls.nth(i);
+      const text = (await el.innerText().catch(() => "")).trim();
+      if (text && !/phone/i.test(text) && (await el.isVisible().catch(() => false))) {
+        console.log(`[${botLabel}] Detected disconnect prompt - clicked fallback "Play" match: "${text}"`);
         await el.click({ timeout: 2000 }).catch(() => {});
         await sleep(3000);
         return true;
       }
-    } catch {
-      // selector not present - keep checking the others
     }
+  } catch {
+    // no matches - fall through
   }
+
   return dismissedError;
 }
 
