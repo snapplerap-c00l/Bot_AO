@@ -22,14 +22,23 @@ on:
         required: false
         default: "1"
         type: string
+      job_timeout_minutes:
+        description: "Max minutes before the whole run is force-cancelled (set comfortably above observe_minutes)"
+        required: false
+        default: "30"
+        type: string
 
 jobs:
   playtest:
     runs-on: ubuntu-latest
-    # Auto-scales with however long you ask it to observe, plus a 15-minute
-    # buffer for setup, disconnect/rejoin overhead, and report generation -
-    # so you never have to remember to raise this separately.
-    timeout-minutes: ${{ fromJSON(inputs.observe_minutes) + 15 }}
+    # Plain fromJSON passthrough - no arithmetic here. GitHub's validation
+    # for job-level timeout-minutes appears not to support expressions with
+    # math (e.g. "+ 15") even though a bare fromJSON(...) works fine - using
+    # arithmetic here previously broke the whole workflow file (every run
+    # failed instantly with 0 jobs, before any job could even start).
+    # Rule of thumb: set this to observe_minutes + ~15 minutes buffer
+    # yourself when triggering a run.
+    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
