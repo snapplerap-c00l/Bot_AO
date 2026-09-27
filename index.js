@@ -69,14 +69,24 @@ async function closePhoneModalIfOpen(page) {
 // match on the known variants rather than one fixed string.
 async function dismissErrorDialogIfPresent(page, botLabel) {
   try {
-    const errorVisible = await page
-      .locator('text=Game Error')
-      .first()
-      .isVisible({ timeout: 500 });
+    // Multiple known error-dialog headlines seen on this platform - add
+    // more here if you spot another variant.
+    const errorPatterns = [
+      'text=Game Error',
+      'text=fatal runtime error',
+      'text=stopped after a fatal',
+    ];
+    let errorVisible = false;
+    for (const pattern of errorPatterns) {
+      if (await page.locator(pattern).first().isVisible({ timeout: 500 }).catch(() => false)) {
+        errorVisible = true;
+        break;
+      }
+    }
     if (!errorVisible) return false;
 
     const actionBtn = page.locator(
-      'button:has-text("Main Menu"), button:has-text("Rejoin"), button:has-text("Try Again"), button:has-text("Retry")'
+      'button:has-text("Resume"), button:has-text("Main Menu"), button:has-text("Rejoin"), button:has-text("Try Again"), button:has-text("Retry")'
     ).first();
 
     if (await actionBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
@@ -200,9 +210,21 @@ async function nudgeAround(page) {
     const y = Math.floor(Math.random() * viewport.height);
     await page.mouse.move(x, y, { steps: 10 });
 
-    const keys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"];
+    // Hold a movement key briefly rather than just tapping it - a single
+    // press/release often registers as barely a step in most web games,
+    // so screenshots end up looking like one static spot. Holding it for
+    // several hundred ms actually moves a character/camera enough to
+    // explore different parts of the map. Includes both arrow keys and
+    // WASD since games vary in which they listen for.
+    const keys = [
+      "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+      "w", "a", "s", "d",
+      "Space",
+    ];
     const key = keys[Math.floor(Math.random() * keys.length)];
-    await page.keyboard.press(key);
+    await page.keyboard.down(key).catch(() => {});
+    await sleep(400 + Math.floor(Math.random() * 500)); // hold ~0.4-0.9s
+    await page.keyboard.up(key).catch(() => {});
   } catch {
     // Non-fatal — the game canvas may not respond to synthetic input,
     // that's fine, we still get screenshots of whatever state it's in.
