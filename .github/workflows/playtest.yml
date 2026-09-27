@@ -22,16 +22,14 @@ on:
         required: false
         default: "1"
         type: string
-      job_timeout_minutes:
-        description: "Max minutes before the whole run is force-cancelled"
-        required: false
-        default: "30"
-        type: string
 
 jobs:
   playtest:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
+    # Auto-scales with however long you ask it to observe, plus a 15-minute
+    # buffer for setup, disconnect/rejoin overhead, and report generation -
+    # so you never have to remember to raise this separately.
+    timeout-minutes: ${{ fromJSON(inputs.observe_minutes) + 15 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
