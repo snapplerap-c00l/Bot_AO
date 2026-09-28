@@ -137,31 +137,18 @@ async function tryClickPlay(page, botLabel = "join") {
   // showing, so it doesn't block finding the real join button below.
   await dismissErrorDialogIfPresent(page, botLabel);
 
-  // Specific phrases first, so we never accidentally match "Play on Phone".
-  const labels = ["Instant Play", "Play Now", "Play in Browser", "Start", "Join"];
+  // Only specific, unambiguous phrases here - generic single words like
+  // "Join" or "Start" previously matched the wrong element (likely a
+  // friend/party invite button) and caused the bot to spam real players
+  // with friend requests. Better to sometimes miss the join button and
+  // just assume auto-join than to risk clicking something that affects
+  // real people.
+  const labels = ["Instant Play", "Play Now", "Play in Browser"];
   for (const label of labels) {
     if (await clickIfVisible(page, label)) {
       console.log(`Clicked "${label}" to join.`);
       return true;
     }
-  }
-
-  // Last-resort bare "Play" match - riskier since it could match "Play on
-  // Phone" too, so explicitly skip anything whose text mentions "Phone".
-  try {
-    const playEls = page.locator('text=Play');
-    const count = await playEls.count();
-    for (let i = 0; i < count; i++) {
-      const el = playEls.nth(i);
-      const text = (await el.innerText().catch(() => "")).trim();
-      if (text && !/phone/i.test(text) && (await el.isVisible().catch(() => false))) {
-        console.log(`Clicked fallback "Play" match: "${text}"`);
-        await el.click({ timeout: 2000 }).catch(() => {});
-        return true;
-      }
-    }
-  } catch {
-    // no matches - fall through
   }
 
   console.log("No obvious play/join button found — assuming auto-join.");
@@ -178,31 +165,16 @@ async function tryReconnectIfNeeded(page, botLabel) {
   await closePhoneModalIfOpen(page);
   const dismissedError = await dismissErrorDialogIfPresent(page, botLabel);
 
-  const labels = ["Reconnect", "Rejoin", "Instant Play", "Play Now", "Join"];
+  // Same reasoning as tryClickPlay above - specific phrases only, no bare
+  // "Join"/"Start"/"Play" matching, to avoid accidentally triggering a
+  // friend/party invite or other real social action against real players.
+  const labels = ["Reconnect", "Rejoin", "Instant Play", "Play Now"];
   for (const label of labels) {
     if (await clickIfVisible(page, label)) {
       console.log(`[${botLabel}] Detected disconnect/rejoin prompt - clicked "${label}".`);
       await sleep(3000);
       return true;
     }
-  }
-
-  // Bare "Play" fallback, same phone-exclusion safeguard as the initial join.
-  try {
-    const playEls = page.locator('text=Play');
-    const count = await playEls.count();
-    for (let i = 0; i < count; i++) {
-      const el = playEls.nth(i);
-      const text = (await el.innerText().catch(() => "")).trim();
-      if (text && !/phone/i.test(text) && (await el.isVisible().catch(() => false))) {
-        console.log(`[${botLabel}] Detected disconnect prompt - clicked fallback "Play" match: "${text}"`);
-        await el.click({ timeout: 2000 }).catch(() => {});
-        await sleep(3000);
-        return true;
-      }
-    }
-  } catch {
-    // no matches - fall through
   }
 
   return dismissedError;
@@ -500,4 +472,13 @@ async function main() {
   const reportPath = path.join(outDir, "report.md");
   await fs.writeFile(
     reportPath,
-    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:*
+    `# Playtest report\n\n**Game:** ${info.title || GAME_URL}\n**URL:** ${GAME_URL}\n**Run:** ${runId}\n**Bots:** ${BOT_COUNT}\n${failedNote}${reconnectNote}\n---\n\n${report}\n`
+  );
+
+  console.log(`\nDone. Report saved to: ${reportPath}`);
+}
+
+main().catch((err) => {
+  console.error("Bot run failed:", err);
+  process.exit(1);
+});
