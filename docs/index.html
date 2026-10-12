@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Allout Playtester</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+:root {
+  --bg: #edf0f4;
+  --surface: #ffffff;
+  --fg: #101828;
+  --muted: #566176;
+  --line: #d3d9e3;
+  --accent: #1f4fd8;
+  --accent-fg: #ffffff;
+  --ok: #17803d;
+  --bad: #b42318;
+  --warn-bg: #fff4d6;
+  --warn-fg: #6b4a00;
+  --font-display: "Familjen Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e131b; --surface: #151c27; --fg: #e8ecf2; --muted: #9aa6b8; --line: #263042;
+    --accent: #7fa2ff; --accent-fg: #0e131b; --ok: #5fd08a; --bad: #ff8a80;
+    --warn-bg: #3a2f10; --warn-fg: #f2d589; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e131b; --surface: #151c27; --fg: #e8ecf2; --muted: #9aa6b8; --line: #263042;
+  --accent: #7fa2ff; --accent-fg: #0e131b; --ok: #5fd08a; --bad: #ff8a80;
+  --warn-bg: #3a2f10; --warn-fg: #f2d589; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 16px/1.6 var(--font-body);
+  padding-inline: 16px;
+  padding-block: 40px 64px;
+}
+.wrap { max-width: 560px; margin-inline: auto; display: flex; flex-direction: column; gap: 28px; }
+h1 { font: 700 clamp(2rem, 8vw, 2.8rem)/1.1 var(--font-display); letter-spacing: -0.01em; text-wrap: balance; margin: 0; }
+p { margin: 0; }
+.sub { color: var(--muted); }
+header { display: flex; flex-direction: column; gap: 10px; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+.fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field.wide { grid-column: 1 / -1; }
+.field label { font-weight: 600; font-size: 14px; }
+.field input {
+  font: 400 16px/1.3 var(--font-body); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px; width: 100%; min-width: 0;
+}
+.field .hint { font-size: 13px; color: var(--muted); line-height: 1.4; }
+button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+.summary { color: var(--muted); font-size: 14px; }
+.note { background: var(--warn-bg); color: var(--warn-fg); border-radius: 6px; padding: 10px 14px; font-size: 14px; line-height: 1.45; }
+.note[hidden] { display: none; }
+
+.start {
+  display: block; width: 100%; cursor: pointer; border: 0; border-radius: 8px;
+  font: 700 18px/1 var(--font-display); padding: 18px 20px;
+  background: var(--accent); color: var(--accent-fg);
+}
+.start:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.status { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--line); padding-top: 16px; }
+.status[hidden] { display: none; }
+.status .line { font: 700 1.2rem/1.3 var(--font-display); }
+.status .line.ok { color: var(--ok); }
+.status .line.bad { color: var(--bad); }
+.status .detail { color: var(--muted); font-size: 14px; }
+.status a { font-size: 14px; color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Plan a run</h1>
+    <p class="sub">Send playtest bots into an allout.game link and get a bug report back.</p>
+  </header>
+
+  <form class="card" id="form" autocomplete="off">
+    <div class="fields">
+      <div class="field wide">
+        <label for="url">Game link</label>
+        <input id="url" type="url" inputmode="url" value="https://allout.game/games/6a37845ff55e4a66bc131e3a/Fishermon-after-dawn">
+      </div>
+      <div class="field">
+        <label for="minutes">Minutes</label>
+        <input id="minutes" type="number" min="1" max="30" step="1" value="5">
+      </div>
+      <div class="field">
+        <label for="interval">Seconds between shots</label>
+        <input id="interval" type="number" min="5" max="120" step="1" value="20">
+      </div>
+      <div class="field">
+        <label for="bots">Bots</label>
+        <input id="bots" type="number" min="1" max="10" step="1" value="1">
+      </div>
+      <div class="field wide">
+        <label for="code">Access code</label>
+        <input id="code" type="password" autocomplete="current-password">
+        <span class="hint">The code you set when you deployed the proxy.</span>
+      </div>
+    </div>
+
+    <p class="summary" id="summary" aria-live="polite"></p>
+    <div class="note" id="note" hidden></div>
+
+    <button class="start" id="start" type="submit">Start</button>
+
+    <div class="status" id="status" hidden aria-live="polite">
+      <div class="line" id="status-line"></div>
+      <div class="detail" id="status-detail"></div>
+      <a id="status-link" href="#" target="_blank" rel="noopener" hidden>Open this run on GitHub</a>
+    </div>
+  </form>
+</div>
+
+<script>
+// Address of your deployed proxy (see WEBSITE.md), with no trailing slash.
+var API_URL = "https://allout-playtester.YOUR-SUBDOMAIN.workers.dev";
+
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var s = {};
+  var pollTimer = null;
+  var startedAt = null;
+
+  function num(el, min, max, def) {
+    var v = Math.round(Number(el.value));
+    if (!isFinite(v) || el.value === "") v = def;
+    return Math.min(max, Math.max(min, v));
+  }
+  function read() {
+    var minutes = num($("minutes"), 1, 30, 5);
+    var interval = num($("interval"), 5, 120, 20);
+    var bots = num($("bots"), 1, 10, 1);
+    s = { url: $("url").value.trim(), minutes: minutes, interval: interval, bots: bots,
+          shots: Math.max(1, Math.floor(minutes * 60 / interval)) };
+  }
+  function validUrl() {
+    try { return new URL(s.url).protocol === "https:"; } catch (e) { return false; }
+  }
+  function render() {
+    read();
+    var approx = Math.round((s.shots * s.interval + 11) / 60 * 10) / 10;
+    $("summary").textContent = s.bots + (s.bots === 1 ? " bot" : " bots") + ", " + s.shots + " screenshots each, about " + approx + " minutes.";
+    var msg = "";
+    if (!validUrl()) msg = "Enter the full game link, starting with https://";
+    else if (s.bots > 4) msg = s.bots + " bots at once can slow each other down on free GitHub runners.";
+    $("note").textContent = msg;
+    $("note").hidden = !msg;
+  }
+  ["url", "minutes", "interval", "bots"].forEach(function (id) { $(id).addEventListener("input", render); });
+
+  try { $("code").value = localStorage.getItem("playtest-code") || ""; } catch (e) {}
+
+  function showStatus(line, cls, detail, link) {
+    $("status").hidden = false;
+    var l = $("status-line");
+    l.textContent = line;
+    l.className = "line" + (cls ? " " + cls : "");
+    $("status-detail").textContent = detail || "";
+    var a = $("status-link");
+    if (link) { a.href = link; a.hidden = false; } else { a.hidden = true; }
+  }
+
+  function call(path, init) {
+    init = init || {};
+    init.headers = Object.assign({ "x-access-code": $("code").value }, init.headers || {});
+    return fetch(API_URL + path, init).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok) throw new Error(data.error || ("The proxy answered " + res.status + "."));
+        return data;
+      });
+    });
+  }
+
+  function elapsed() {
+    var sec = Math.max(0, Math.round((Date.now() - Date.parse(startedAt)) / 1000));
+    return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+  }
+
+  function poll() {
+    clearTimeout(pollTimer);
+    call("/status?since=" + encodeURIComponent(startedAt)).then(function (d) {
+      if (d.state === "waiting") {
+        showStatus("Starting", "", "Waiting for GitHub to pick up the run. " + elapsed());
+      } else if (d.state === "queued") {
+        showStatus("Queued", "", "GitHub is getting a machine ready. " + elapsed(), d.runUrl);
+      } else if (d.state === "running") {
+        showStatus("Running", "", "The bots are playing. " + elapsed() + " so far.", d.runUrl);
+      } else {
+        $("start").disabled = false;
+        try { localStorage.removeItem("playtest-started"); } catch (e) {}
+        if (d.conclusion === "success") showStatus("Finished", "ok", "The report is posted on the run's summary page.", d.runUrl);
+        else if (d.conclusion === "cancelled") showStatus("Cancelled", "bad", "The run was stopped before it finished.", d.runUrl);
+        else showStatus("Failed", "bad", "Open the run to see which step failed.", d.runUrl);
+        return;
+      }
+      pollTimer = setTimeout(poll, 8000);
+    }).catch(function (err) {
+      showStatus("Lost contact", "bad", err.message);
+      $("start").disabled = false;
+    });
+  }
+
+  $("form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    read();
+    if (!validUrl()) { render(); return; }
+    if (!$("code").value) { showStatus("Enter the access code", "bad", "The proxy only starts runs for people who know it."); return; }
+    try { localStorage.setItem("playtest-code", $("code").value); } catch (err) {}
+    $("start").disabled = true;
+    showStatus("Starting", "", "Sending your settings to GitHub.");
+    call("/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: s.url, minutes: s.minutes, interval: s.interval, bots: s.bots })
+    }).then(function (d) {
+      startedAt = d.startedAt;
+      try { localStorage.setItem("playtest-started", startedAt); } catch (err) {}
+      poll();
+    }).catch(function (err) {
+      showStatus("Could not start", "bad", err.message);
+      $("start").disabled = false;
+    });
+  });
+
+  render();
+
+  // Pick up a run that was started before the page was reloaded.
+  try {
+    var saved = localStorage.getItem("playtest-started");
+    if (saved && $("code").value) { startedAt = saved; $("start").disabled = true; poll(); }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>

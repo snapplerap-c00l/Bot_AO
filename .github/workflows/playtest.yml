@@ -60,7 +60,10 @@ jobs:
           OBSERVE_MINUTES: ${{ inputs.observe_minutes }}
           SCREENSHOT_INTERVAL_SECONDS: ${{ inputs.screenshot_interval_seconds }}
           BOT_COUNT: ${{ inputs.bot_count }}
-        run: node index.js "${{ inputs.game_url }}"
+          GAME_URL: ${{ inputs.game_url }}
+        # The link is passed through an environment variable instead of being
+        # pasted into the command, so a crafted link can never run as shell code.
+        run: node index.js "$GAME_URL"
 
       - name: Post report to job summary
         if: always()

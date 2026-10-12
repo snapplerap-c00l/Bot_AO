@@ -1,0 +1,11 @@
+name = "allout-playtester"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+# The address your site is served from, with no path and no trailing slash.
+ALLOWED_ORIGIN = "https://snapplerap-c00l.github.io"
+
+# Secrets are set with `wrangler secret put`, not stored here:
+#   GITHUB_TOKEN
+#   ACCESS_CODE
