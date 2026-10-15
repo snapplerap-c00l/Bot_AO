@@ -22,11 +22,31 @@ on:
         required: false
         default: "1"
         type: string
+      ai_play:
+        description: "Let Claude look at the screen and choose moves/clicks (1 = on, 0 = random nudges)"
+        required: false
+        default: "1"
+        type: string
+      ai_max_steps:
+        description: "Max AI actions per bot (each is one API call)"
+        required: false
+        default: "40"
+        type: string
       job_timeout_minutes:
         description: "Max minutes before the whole run is force-cancelled (set comfortably above observe_minutes)"
         required: false
         default: "30"
         type: string
+
+# The bot's learned memory lives in memory/ and is committed back after each
+# run, which needs write access to the repo contents.
+permissions:
+  contents: write
+
+# Runs share one memory, so queue them instead of letting two overlap.
+concurrency:
+  group: playtest-memory
+  cancel-in-progress: false
 
 jobs:
   playtest:
@@ -60,6 +80,8 @@ jobs:
           OBSERVE_MINUTES: ${{ inputs.observe_minutes }}
           SCREENSHOT_INTERVAL_SECONDS: ${{ inputs.screenshot_interval_seconds }}
           BOT_COUNT: ${{ inputs.bot_count }}
+          AI_PLAY: ${{ inputs.ai_play }}
+          AI_MAX_STEPS: ${{ inputs.ai_max_steps }}
           GAME_URL: ${{ inputs.game_url }}
         # The link is passed through an environment variable instead of being
         # pasted into the command, so a crafted link can never run as shell code.
@@ -75,10 +97,26 @@ jobs:
             echo "No report.md found — check the uploaded artifact for screenshots/logs." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Save learned memory
+        if: always()
+        run: |
+          if [ -d memory ] && [ -n "$(git status --porcelain memory)" ]; then
+            git config user.name "playtest-bot"
+            git config user.email "playtest-bot@users.noreply.github.com"
+            git add memory
+            git commit -m "Update playtest memory (run ${{ github.run_id }})"
+            git pull --rebase origin "${{ github.ref_name }}" || true
+            git push origin "HEAD:${{ github.ref_name }}" || echo "Could not push memory; it is still in the uploaded artifact."
+          else
+            echo "No memory changes to save."
+          fi
+
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playtest-run
-          path: runs/
+          path: |
+            runs/
+            memory/
           retention-days: 14
