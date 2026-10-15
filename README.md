@@ -15,46 +15,6 @@ report for the developer.
    report covering: concept summary, what's working, possible bugs, and
    improvement suggestions
 6. Saves everything (screenshots + report) under `runs/<timestamp>/`
-7. Learns: updates a per-game memory file in `memory/` (see below)
-
-## AI play
-
-With an `ANTHROPIC_API_KEY` set, Claude plays the game instead of random key
-mashing. Every few seconds the bot sends Claude a screenshot, Claude picks one
-action (hold a key, click, move the mouse, or wait), and the bot carries it out.
-The action log is included in the report, so it can say what was actually tried
-and where the bot got stuck.
-
-The code enforces the limits, not the model: only a short list of game keys is
-allowed (no Enter, no typing), clicks are refused on anything labelled like a
-friend/invite/party, chat, shop, login, share or external link, and holds are
-capped at 2.5s. Refused actions show up in the log.
-
-Settings (see `env.example`): `AI_PLAY=0` turns it off, `AI_STEP_SECONDS`,
-`AI_MAX_STEPS` (each step is one API call, so this caps cost per bot), and
-`AI_PLAY_MODEL` (a cheaper model than the one writing the report).
-
-## How it learns
-
-The bot keeps one small JSON file per game in `memory/` (override with
-`MEMORY_DIR`). It holds a short profile of the game, a log of recent runs, a
-list of tracked issues (open / fixed / unclear, with how many runs each was
-seen in), notes on what helps the bot, and things to check next time.
-
-- **Before the report:** the memory is given to Claude, so the report gets a
-  "Compared to previous runs" section: what's new, what's still happening, and
-  what looks fixed.
-- **After the report:** a second Claude call updates the memory from the new
-  report. Counters and dates are handled in code, and issues are never
-  silently dropped.
-- **On GitHub Actions:** the workflow commits `memory/` back to the repo after
-  each run, so the next run starts with it. Runs are queued so they never
-  overwrite each other's memory.
-
-This is memory, not model training: Claude itself doesn't change, but each run
-gets better context than the last. To reset what the bot knows about a game,
-delete its file in `memory/`. Without an `ANTHROPIC_API_KEY` the memory is
-neither read for a report nor updated.
 
 ## Setup (on a server/VPS — recommended)
 
